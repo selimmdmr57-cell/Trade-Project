@@ -1,0 +1,243 @@
+node_modules
+.env
+dist
+build
+# Crypto Sim Project
+
+Simple demo project: a frontend + backend crypto trading simulator with support for opening long/short positions with up to 10x leverage.
+
+Folders:
+- backend: Express API that processes trades (simulation only, no real funds)
+- frontend: React app (Create React App style minimal)
+- simulation: core trade logic (PnL, liquidation price)
+
+How to run (basic):
+1. Backend:
+   cd backend
+   npm install
+   npm start
+import React, { useEffect, useState } from 'react';
+import axios from 'axios';
+
+function App(){const express = require('express');
+const bodyParser = require('body-parser');
+const cors = require('cors');
+const simulator = require('../simulation/simulator');
+
+const app = express();
+app.use(cors());
+app.use(bodyParser.json());
+
+let users = {
+  // example user
+  "user1": { balance: 1000.0, positions: [] } // balance in USDT
+};
+
+// get balance
+app.get('/api/balance/:user', (req, res) => {
+  const u = users[req.params.user];
+  if(!u) return res.status(404).json({error:'user not found'});
+  res.json(u);
+});
+
+// open position
+app.post('/api/open', (req, res) => {
+  // expected: { user, side: 'long'|'short', amount, leverage, entryPrice }
+  const { user, side, amount, leverage, entryPrice } = req.body;
+  if(!users[user]) return res.status(404).json({error:'user not found'});
+  const u = users[user];
+  if(amount > u.balance) return res.status(400).json({error:'insufficient balance'});
+  if(leverage < 1 || leverage > 10) return res.status(400).json({error:'leverage must be 1-10'});
+  // create position
+  const pos = simulator.openPosition({side, amount, leverage, entryPrice});
+  u.balance -= amount; // use margin
+  u.positions.push(pos);
+  res.json({ balance: u.balance, position: pos });
+});
+
+// close position
+app.post('/api/close', (req, res) => {
+  // expected: { user, index, exitPrice }
+  const { user, index, exitPrice } = req.body;
+  if(!users[user]) return res.status(404).json({error:'user not found'});
+  const u = users[user];
+  const pos = u.positions[index];
+  if(!pos) return res.status(400).json({error:'position not found'});
+  const result = simulator.closePosition(pos, exitPrice);
+  // return margin + PnL
+  u.balance += result.returned; 
+  // remove position
+  u.positions.splice(index,1);
+  res.json({ balance: u.balance, result });
+});
+
+app.listen(4000, () => console.log('Backend running on http://localhost:4000'));
+
+  const [user, setUser] = useState('user1');
+  const [state, setState] = useState({balance:0, positions:[]});
+  const [form, setForm] = useState({side:'long', amount:100, leverage:2, entryPrice:100});
+
+  useEffect(()=>{ fetchBalance(); }, []);
+
+  async function fetchBalance(){
+    const r = await axios.get(`http://localhost:4000/api/balance/${user}`);
+    setState(r.data);
+  }
+
+  async function open(){
+    const r = await axios.post('http://localhost:4000/api/open', {...form, user});
+    setState(r.data);
+  }
+
+  async function close(idx){
+    const exitPrice = parseFloat(prompt('Exit price?'));
+    if(isNaN(exitPrice)) return;
+    const r = await axios.post('http://localhost:4000/api/close', { user, index: idx, exitPrice });
+    setState(r.data);
+  }
+
+  return (
+    <div style={{padding:20, fontFamily:'Arial'}}>
+      <h1>Crypto Sim - 10x Long/Short Demo</h1>
+      <p>User: <b>{user}</b></p>
+      <h3>Balance: {state.balance} USDT</h3>
+
+      <div style={{marginTop:20}}>
+        <h4>Open Position</h4>
+        <label>
+          Side:
+          <select value={form.side} onChange={e=>setForm({...form, side:e.target.value})}>
+            <option value="long">Long</option>
+            <option value="short">Short</option>
+          </select>
+        </label>
+        <label style={{marginLeft:10}}>
+          Amount (margin):
+          <input type="number" value={form.amount} onChange={e=>setForm({...form, amount:parseFloat(e.target.value)})} />
+        </label>
+        <label style={{marginLeft:10}}>
+          Leverage:
+          <input type="number" min="1" max="10" value={form.leverage} onChange={e=>setForm({...form, leverage:parseFloat(e.target.value)})} />
+        </label>
+        <label style={{marginLeft:10}}>
+          Entry Price:
+          <input type="number" value={form.entryPrice} onChange={e=>setForm({...form, entryPrice:parseFloat(e.target.value)})} />
+        </label>
+        <button onClick={open} style={{marginLeft:10}}>Open</button>
+      </div>
+
+      <div style={{marginTop:20}}>
+        <h4>Open Positions</h4>
+        {state.positions && state.positions.length>0 ? (
+          <table border="1" cellPadding="8">
+            <thead><tr><th>#</th><th>Side</th><th>Amount</th><th>Lev</th><th>Entry</th><th>Size</th><th>LiqPrice</th><th>Actions</th></tr></thead>
+            <tbody>
+              {state.positions.map((p,i)=>(
+                <tr key={i}>
+                  <td>{i}</td>
+                  <td>{p.side}</td>
+                  <td>{p.amount}</td>
+                  <td>{p.leverage}</td>
+                  <td>{p.entryPrice}</td>
+                  <td>{p.size}</td>
+                  <td>{p.liquidationPrice.toFixed(4)}</td>
+                  <td><button onClick={()=>close(i)}>Close</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : <p>No positions</p>}
+      </div>
+    </div>
+  );
+}
+
+export default App;
+
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import App from './App';
+
+const root = createRoot(document.getElementById('root'));
+root.render(<App />);
+
+2. Frontend:
+   cd frontend
+   npm install
+   npm start{
+  "name": "crypto-sim-backend",{
+  "name": "crypto-sim-frontend",/**
+ * Simple simulator for leveraged positions.
+ * Position object:
+ * {
+ *  side: 'long' or 'short',
+ *  amount: margin in USDT,
+ *  leverage: number,
+ *  entryPrice: number,
+ *  size: amount * leverage (contract size in USDT),
+ *  liquidationPrice: number
+ * }
+ *
+ * Calculates PnL when closed: for longs: (exit-entry)/entry * size
+ * for shorts: (entry-exit)/entry * size
+ *
+ * Liquidation price simplified (not realistic): for long:
+ *  liquidationPrice = entryPrice * (1 - 1/leverage)
+ * for short:
+ *  liquidationPrice = entryPrice * (1 + 1/leverage)
+ *
+ * Returned value on close = margin + pnl (can be negative, limited to 0)
+ */
+
+function openPosition({side, amount, leverage, entryPrice}) {
+  const size = amount * leverage;
+  let liquidationPrice;
+  if(side === 'long') {
+    liquidationPrice = entryPrice * (1 - 1/leverage);
+  } else {
+    liquidationPrice = entryPrice * (1 + 1/leverage);
+  }
+  return {
+    side, amount, leverage, entryPrice, size, liquidationPrice, openedAt: Date.now()
+  };
+}
+
+function closePosition(pos, exitPrice) {
+  let pnl;
+  if(pos.side === 'long') {
+    pnl = (exitPrice - pos.entryPrice) / pos.entryPrice * pos.size;
+  } else {
+    pnl = (pos.entryPrice - exitPrice) / pos.entryPrice * pos.size;
+  }
+  const returned = Math.max(0, pos.amount + pnl); // margin + pnl, not below 0
+  return { pnl, returned };
+}
+
+module.exports = { openPosition, closePosition };
+
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-scripts": "5.0.1",
+    "axios": "^1.4.0"
+  }
+}
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "body-parser": "^1.20.2"
+  }
+}
+
+This is a demo/simulation. Do NOT use with real funds.
